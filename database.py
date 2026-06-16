@@ -1,7 +1,9 @@
 import sqlite3
+import os
 from datetime import datetime
 
 def get_db():
+    os.makedirs("/data", exist_ok=True)
     conn = sqlite3.connect("/data/bot.db")
     conn.row_factory = sqlite3.Row
     return conn
