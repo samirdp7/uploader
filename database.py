@@ -2,7 +2,7 @@ import sqlite3
 from datetime import datetime
 
 def get_db():
-    conn = sqlite3.connect("bot.db")
+    conn = sqlite3.connect("/data/bot.db")
     conn.row_factory = sqlite3.Row
     return conn
 
