@@ -1,8 +1,11 @@
 import sqlite3
+import os
 from datetime import datetime
 
+DB_PATH = "/data/bot.db"
+
 def get_db():
-    conn = sqlite3.connect("bot.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -42,13 +45,11 @@ def init_db():
             FOREIGN KEY (video_id) REFERENCES videos(video_id)
         );
     """)
-
     try:
         conn.execute("ALTER TABLE videos ADD COLUMN content_type TEXT DEFAULT 'video'")
         conn.commit()
     except sqlite3.OperationalError:
         pass
-
     conn.close()
 
 def add_user(user_id, username=None):
@@ -145,8 +146,6 @@ def get_video_stats(video_id):
     """, (video_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
-
-# ─── تابع جدید: لیست ویدیوها با صفحه‌بندی ────────────────────────────────────
 
 def get_videos_paginated(page: int = 0, page_size: int = 5) -> dict:
     conn = get_db()
