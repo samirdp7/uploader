@@ -31,7 +31,10 @@ async def check_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
     not_joined = []
     for ch in channels:
         try:
-            member = await context.bot.get_chat_member(f"@{ch['username']}", user_id)
+            # اگر chat_id عددی هست (کانال خصوصی) مستقیم استفاده می‌کنیم
+            # وگرنه با @ برای کانال عمومی
+            identifier = int(ch['username']) if ch['username'].lstrip('-').isdigit() else f"@{ch['username']}"
+            member = await context.bot.get_chat_member(identifier, user_id)
             if member.status in ("left", "kicked"):
                 not_joined.append(ch)
         except Exception:
@@ -39,9 +42,9 @@ async def check_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
     return not_joined
 
 
-def membership_keyboard(not_joined: list[dict], video_id: str) -> InlineKeyboardMarkup:
+def membership_keyboard(not_joined: list[dict], content_id: str) -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(f"📢 {ch['title']}", url=ch["link"])] for ch in not_joined]
-    buttons.append([InlineKeyboardButton("✅ عضو شدم", callback_data=f"check_{video_id}")])
+    buttons.append([InlineKeyboardButton("✅ عضو شدم", callback_data=f"check_{content_id}")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -68,13 +71,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
     if args:
-        video_id = args[0]
-        await send_video_to_user(update, context, video_id)
+        content_id = args[0]
+        await send_content_to_user(update, context, content_id)
         return
 
     await update.message.reply_text(
         f"سلام {user.first_name}! 👋\n\n"
-        "برای دریافت ویدیو، لینک مربوطه را باز کنید."
+        "برای دریافت ویدیو یا عکس، لینک مربوطه را باز کنید."
     )
 
 
@@ -86,40 +89,48 @@ async def delete_message_later(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         pass
 
 
-async def send_video_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE, video_id: str):
+async def send_content_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE, content_id: str):
     user_id = update.effective_user.id
 
     not_joined = await check_membership(user_id, context)
     if not_joined:
-        kb = membership_keyboard(not_joined, video_id)
+        kb = membership_keyboard(not_joined, content_id)
         await update.message.reply_text(
-            "⚠️ برای دریافت ویدیو، ابتدا در کانال‌های زیر عضو شوید:",
+            "⚠️ برای دریافت محتوا، ابتدا در کانال‌های زیر عضو شوید:",
             reply_markup=kb
         )
         return
 
-    video = get_video(video_id)
+    video = get_video(content_id)
     if not video:
-        await update.message.reply_text("❌ ویدیو پیدا نشد یا حذف شده است.")
+        await update.message.reply_text("❌ محتوا پیدا نشد یا حذف شده است.")
         return
 
-    increment_view(video_id, user_id)
-    stats = get_video_stats(video_id)
+    increment_view(content_id, user_id)
+    stats = get_video_stats(content_id)
     view_count = stats["view_count"] if stats else 0
 
     caption = video.get("caption") or ""
     caption += f"\n\n👁 {view_count} بازدید"
 
-    sent = await context.bot.send_video(
-        chat_id=update.effective_chat.id,
-        video=video["file_id"],
-        caption=caption,
-    )
+    content_type = video.get("content_type", "video")
 
-    # auto-delete after 60 seconds
+    if content_type == "photo":
+        sent = await context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=video["file_id"],
+            caption=caption,
+        )
+    else:
+        sent = await context.bot.send_video(
+            chat_id=update.effective_chat.id,
+            video=video["file_id"],
+            caption=caption,
+        )
+
     notice = await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="⏳ این ویدیو بعد از ۱ دقیقه حذف می‌شود.",
+        text="⏳ این محتوا بعد از ۱ دقیقه حذف می‌شود.",
         reply_to_message_id=sent.message_id,
     )
     asyncio.create_task(delete_message_later(context, sent.chat_id, sent.message_id, 60))
@@ -130,46 +141,55 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    video_id = query.data.split("_", 1)[1]
+    content_id = query.data.split("_", 1)[1]
 
     not_joined = await check_membership(user_id, context)
     if not_joined:
-        kb = membership_keyboard(not_joined, video_id)
+        kb = membership_keyboard(not_joined, content_id)
         await query.edit_message_text(
             "⚠️ هنوز در همه کانال‌ها عضو نشده‌اید:",
             reply_markup=kb
         )
         return
 
-    video = get_video(video_id)
+    video = get_video(content_id)
     if not video:
-        await query.edit_message_text("❌ ویدیو پیدا نشد یا حذف شده است.")
+        await query.edit_message_text("❌ محتوا پیدا نشد یا حذف شده است.")
         return
 
     await query.delete_message()
-    increment_view(video_id, user_id)
-    stats = get_video_stats(video_id)
+    increment_view(content_id, user_id)
+    stats = get_video_stats(content_id)
     view_count = stats["view_count"] if stats else 0
 
     caption = video.get("caption") or ""
     caption += f"\n\n👁 {view_count} بازدید"
 
-    sent = await context.bot.send_video(
-        chat_id=query.message.chat_id,
-        video=video["file_id"],
-        caption=caption,
-    )
+    content_type = video.get("content_type", "video")
+
+    if content_type == "photo":
+        sent = await context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=video["file_id"],
+            caption=caption,
+        )
+    else:
+        sent = await context.bot.send_video(
+            chat_id=query.message.chat_id,
+            video=video["file_id"],
+            caption=caption,
+        )
 
     notice = await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text="⏳ این ویدیو بعد از ۱ دقیقه حذف می‌شود.",
+        text="⏳ این محتوا بعد از ۱ دقیقه حذف می‌شود.",
         reply_to_message_id=sent.message_id,
     )
     asyncio.create_task(delete_message_later(context, sent.chat_id, sent.message_id, 60))
     asyncio.create_task(delete_message_later(context, notice.chat_id, notice.message_id, 60))
 
 
-# ─── Admin: upload video ─────────────────────────────────────────────────────
+# ─── Admin: upload video or photo ────────────────────────────────────────────
 
 @require_admin
 async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -179,18 +199,46 @@ async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ لطفاً یک ویدیو ارسال کنید.")
         return
 
-    video_id = uuid.uuid4().hex[:10]
+    content_id = uuid.uuid4().hex[:10]
     file_id = message.video.file_id
     caption = message.caption or ""
     uploader = message.from_user.id
 
-    add_video(video_id, file_id, caption, uploader)
+    # content_type = "video" برای ویدیو
+    add_video(content_id, file_id, caption, uploader, content_type="video")
 
     bot_username = (await context.bot.get_me()).username
-    link = f"https://t.me/{bot_username}?start={video_id}"
+    link = f"https://t.me/{bot_username}?start={content_id}"
     await message.reply_text(
         f"✅ ویدیو ذخیره شد!\n\n"
-        f"🆔 شناسه: `{video_id}`\n"
+        f"🆔 شناسه: `{content_id}`\n"
+        f"🔗 لینک: {link}",
+        parse_mode="Markdown"
+    )
+
+
+@require_admin
+async def upload_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sends a photo → bot saves it and returns a shareable link."""
+    message = update.message
+    if not message.photo:
+        await message.reply_text("❌ لطفاً یک عکس ارسال کنید.")
+        return
+
+    content_id = uuid.uuid4().hex[:10]
+    # بزرگترین سایز عکس رو می‌گیریم
+    file_id = message.photo[-1].file_id
+    caption = message.caption or ""
+    uploader = message.from_user.id
+
+    # content_type = "photo" برای عکس
+    add_video(content_id, file_id, caption, uploader, content_type="photo")
+
+    bot_username = (await context.bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start={content_id}"
+    await message.reply_text(
+        f"✅ عکس ذخیره شد!\n\n"
+        f"🆔 شناسه: `{content_id}`\n"
         f"🔗 لینک: {link}",
         parse_mode="Markdown"
     )
@@ -210,14 +258,14 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    video_id = args[0]
-    st = get_video_stats(video_id)
+    content_id = args[0]
+    st = get_video_stats(content_id)
     if not st:
-        await update.message.reply_text("❌ ویدیو پیدا نشد.")
+        await update.message.reply_text("❌ محتوا پیدا نشد.")
         return
 
     await update.message.reply_text(
-        f"📊 *آمار ویدیو* `{video_id}`\n\n"
+        f"📊 *آمار محتوا* `{content_id}`\n\n"
         f"👁 بازدید کل: {st['view_count']}\n"
         f"👥 بینندگان یکتا: {st['unique_viewers']}\n"
         f"📅 آپلود: {st['uploaded_at']}",
@@ -229,38 +277,45 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def delete_video_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("استفاده: /delvideo <video_id>")
+        await update.message.reply_text("استفاده: /delvideo <id>")
         return
-    video_id = args[0]
-    delete_video(video_id)
-    await update.message.reply_text(f"✅ ویدیو `{video_id}` حذف شد.", parse_mode="Markdown")
+    content_id = args[0]
+    delete_video(content_id)
+    await update.message.reply_text(f"✅ محتوا `{content_id}` حذف شد.", parse_mode="Markdown")
 
 
 # ─── Admin: channel management ───────────────────────────────────────────────
 
 @require_admin
 async def add_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Usage: /addchannel @username Title https://t.me/..."""
+    """
+    کانال عمومی:  /addchannel @username عنوان https://t.me/...
+    کانال خصوصی: /addchannel -1001234567890 عنوان https://t.me/+invite_link
+    """
     args = context.args
     if len(args) < 3:
-        await update.message.reply_text("استفاده: /addchannel @username عنوان لینک")
+        await update.message.reply_text(
+            "استفاده:\n"
+            "کانال عمومی: /addchannel @username عنوان لینک\n"
+            "کانال خصوصی: /addchannel -1001234567890 عنوان لینک_دعوت"
+        )
         return
-    username = args[0].lstrip("@")
+    username = args[0].lstrip("@")   # برای کانال خصوصی عدد منفی می‌مونه
     title = args[1]
     link = args[2]
     add_channel(username, title, link)
-    await update.message.reply_text(f"✅ کانال @{username} اضافه شد.")
+    await update.message.reply_text(f"✅ کانال اضافه شد: {title}")
 
 
 @require_admin
 async def remove_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("استفاده: /removechannel @username")
+        await update.message.reply_text("استفاده: /removechannel @username یا /removechannel -100xxxxx")
         return
     username = args[0].lstrip("@")
     remove_channel(username)
-    await update.message.reply_text(f"✅ کانال @{username} حذف شد.")
+    await update.message.reply_text(f"✅ کانال حذف شد.")
 
 
 @require_admin
@@ -271,7 +326,9 @@ async def list_channels_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
     text = "📢 *کانال‌های اجباری:*\n\n"
     for ch in channels:
-        text += f"• @{ch['username']} — {ch['title']}\n"
+        identifier = ch['username']
+        label = f"-{identifier}" if identifier.lstrip('-').isdigit() else f"@{identifier}"
+        text += f"• {label} — {ch['title']}\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
@@ -332,22 +389,23 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_owner(user_id) or is_admin(user_id):
         text = (
             "🛠 *دستورات ادمین:*\n\n"
-            "📤 ارسال ویدیو → ربات لینک می‌دهد\n\n"
+            "📤 ارسال ویدیو یا عکس → ربات لینک می‌دهد\n\n"
             "*کانال‌ها:*\n"
             "/addchannel @username عنوان لینک\n"
+            "/addchannel \\-100xxx عنوان لینک\\_دعوت _(کانال خصوصی)_\n"
             "/removechannel @username\n"
             "/channels — لیست کانال‌ها\n\n"
-            "*ویدیو:*\n"
+            "*محتوا:*\n"
             "/stats — آمار کلی\n"
-            "/stats <id> — آمار ویدیو\n"
-            "/delvideo <id> — حذف ویدیو\n\n"
+            "/stats <id> — آمار محتوا\n"
+            "/delvideo <id> — حذف محتوا\n\n"
             "*ادمین (فقط مالک):*\n"
             "/addadmin <id>\n"
             "/removeadmin <id>\n"
             "/admins"
         )
     else:
-        text = "برای دریافت ویدیو، لینک مستقیم را باز کنید. 🎬"
+        text = "برای دریافت ویدیو یا عکس، لینک مستقیم را باز کنید. 🎬"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
@@ -367,7 +425,11 @@ def main():
     app.add_handler(CommandHandler("addadmin", add_admin_command))
     app.add_handler(CommandHandler("removeadmin", remove_admin_command))
     app.add_handler(CommandHandler("admins", list_admins_command))
+
+    # هندلر ویدیو و عکس جدا
     app.add_handler(MessageHandler(filters.VIDEO & filters.ChatType.PRIVATE, upload_video))
+    app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, upload_photo))
+
     app.add_handler(CallbackQueryHandler(check_join_callback, pattern=r"^check_"))
 
     logger.info("Bot started...")
