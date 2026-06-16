@@ -115,54 +115,67 @@ PANEL_HELP_TEXTS = {
 
 # ─── Videos list with pagination ─────────────────────────────────────────────
 
-async def show_videos_page(query, page: int):
-    data = get_videos_paginated(page=page, page_size=PAGE_SIZE)
-    videos = data["videos"]
-    total = data["total"]
-    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+async def show_videos_page(query, context: ContextTypes.DEFAULT_TYPE, page: int):
+    try:
+        data = get_videos_paginated(page=page, page_size=PAGE_SIZE)
+        videos = data["videos"]
+        total = data["total"]
+        total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
 
-    if not videos:
+        if not videos:
+            await query.edit_message_text(
+                "📭 هیچ محتوایی آپلود نشده.",
+                reply_markup=PANEL_BACK_KB
+            )
+            return
+
+        # استفاده از context.bot به جای query.bot
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+
+        text = f"🎬 *لیست محتواها* (صفحه {page + 1} از {total_pages} | مجموع: {total})\n\n"
+        for v in videos:
+            icon = "🖼" if v["content_type"] == "photo" else "🎬"
+            if v["caption"]:
+                caption_preview = (v["caption"][:25] + "…") if len(v["caption"]) > 25 else v["caption"]
+            else:
+                caption_preview = "بدون کپشن"
+            link = f"https://t.me/{bot_username}?start={v['video_id']}"
+            text += (
+                f"{icon} `{v['video_id']}`\n"
+                f"   📝 {caption_preview}\n"
+                f"   🔗 [لینک دریافت]({link})\n"
+                f"   📅 {v['uploaded_at'][:16]}\n\n"
+            )
+
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"panel_videos_{page - 1}"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("➡️ بعدی", callback_data=f"panel_videos_{page + 1}"))
+
+        buttons = []
+        if nav_buttons:
+            buttons.append(nav_buttons)
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="panel_back")])
+
         await query.edit_message_text(
-            "📭 هیچ محتوایی آپلود نشده.",
-            reply_markup=PANEL_BACK_KB
-        )
-        return
-
-    bot_username = (await query.bot.get_me()).username
-
-    text = f"🎬 *لیست محتواها* (صفحه {page + 1} از {total_pages} | مجموع: {total})\n\n"
-    for v in videos:
-        icon = "🖼" if v["content_type"] == "photo" else "🎬"
-        caption_preview = ""
-        if v["caption"]:
-            caption_preview = (v["caption"][:25] + "…") if len(v["caption"]) > 25 else v["caption"]
-        else:
-            caption_preview = "بدون کپشن"
-        link = f"https://t.me/{bot_username}?start={v['video_id']}"
-        text += (
-            f"{icon} `{v['video_id']}`\n"
-            f"   📝 {caption_preview}\n"
-            f"   🔗 [لینک دریافت]({link})\n"
-            f"   📅 {v['uploaded_at'][:16]}\n\n"
+            text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            disable_web_page_preview=True
         )
 
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"panel_videos_{page - 1}"))
-    if page < total_pages - 1:
-        nav_buttons.append(InlineKeyboardButton("➡️ بعدی", callback_data=f"panel_videos_{page + 1}"))
-
-    buttons = []
-    if nav_buttons:
-        buttons.append(nav_buttons)
-    buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="panel_back")])
-
-    await query.edit_message_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        disable_web_page_preview=True
-    )
+    except Exception as e:
+        logger.error(f"show_videos_page error: {e}", exc_info=True)
+        try:
+            await query.edit_message_text(
+                f"❌ خطا در نمایش لیست:\n`{e}`",
+                parse_mode="Markdown",
+                reply_markup=PANEL_BACK_KB
+            )
+        except Exception:
+            pass
 
 
 # ─── Panel command & callback ─────────────────────────────────────────────────
@@ -238,8 +251,11 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ─── لیست محتواها با صفحه‌بندی ───
     if action.startswith("panel_videos_"):
-        page = int(action.split("_")[-1])
-        await show_videos_page(query, page)
+        try:
+            page = int(action.split("_")[-1])
+        except (ValueError, IndexError):
+            page = 0
+        await show_videos_page(query, context, page)
         return
 
     if action in PANEL_HELP_TEXTS:
