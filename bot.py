@@ -6,6 +6,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes
 )
+import asyncio
 from database import (
     init_db, add_user, get_users_count, is_admin, add_admin, remove_admin,
     get_admins, add_channel, remove_channel, get_channels,
@@ -77,6 +78,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def delete_message_later(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, delay: int = 60):
+    await asyncio.sleep(delay)
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
 async def send_video_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE, video_id: str):
     user_id = update.effective_user.id
 
@@ -95,11 +104,26 @@ async def send_video_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     increment_view(video_id, user_id)
-    await context.bot.send_video(
+    stats = get_video_stats(video_id)
+    view_count = stats["view_count"] if stats else 0
+
+    caption = video.get("caption") or ""
+    caption += f"\n\n👁 {view_count} بازدید"
+
+    sent = await context.bot.send_video(
         chat_id=update.effective_chat.id,
         video=video["file_id"],
-        caption=video.get("caption") or "",
+        caption=caption,
     )
+
+    # auto-delete after 60 seconds
+    notice = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="⏳ این ویدیو بعد از ۱ دقیقه حذف می‌شود.",
+        reply_to_message_id=sent.message_id,
+    )
+    asyncio.create_task(delete_message_later(context, sent.chat_id, sent.message_id, 60))
+    asyncio.create_task(delete_message_later(context, notice.chat_id, notice.message_id, 60))
 
 
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -124,11 +148,25 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await query.delete_message()
     increment_view(video_id, user_id)
-    await context.bot.send_video(
+    stats = get_video_stats(video_id)
+    view_count = stats["view_count"] if stats else 0
+
+    caption = video.get("caption") or ""
+    caption += f"\n\n👁 {view_count} بازدید"
+
+    sent = await context.bot.send_video(
         chat_id=query.message.chat_id,
         video=video["file_id"],
-        caption=video.get("caption") or "",
+        caption=caption,
     )
+
+    notice = await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="⏳ این ویدیو بعد از ۱ دقیقه حذف می‌شود.",
+        reply_to_message_id=sent.message_id,
+    )
+    asyncio.create_task(delete_message_later(context, sent.chat_id, sent.message_id, 60))
+    asyncio.create_task(delete_message_later(context, notice.chat_id, notice.message_id, 60))
 
 
 # ─── Admin: upload video ─────────────────────────────────────────────────────
