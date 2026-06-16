@@ -1,10 +1,8 @@
 import sqlite3
-import os
 from datetime import datetime
 
 def get_db():
-    os.makedirs("/data", exist_ok=True)
-    conn = sqlite3.connect("/data/bot.db")
+    conn = sqlite3.connect("bot.db")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -45,12 +43,10 @@ def init_db():
         );
     """)
 
-    # Migration: اگه دیتابیس قدیمی داره و ستون content_type نداره، اضافه‌اش می‌کنیم
     try:
         conn.execute("ALTER TABLE videos ADD COLUMN content_type TEXT DEFAULT 'video'")
         conn.commit()
     except sqlite3.OperationalError:
-        # ستون قبلاً وجود داره، مشکلی نیست
         pass
 
     conn.close()
@@ -149,3 +145,26 @@ def get_video_stats(video_id):
     """, (video_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+# ─── تابع جدید: لیست ویدیوها با صفحه‌بندی ────────────────────────────────────
+
+def get_videos_paginated(page: int = 0, page_size: int = 5) -> dict:
+    conn = get_db()
+    total = conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
+    offset = page * page_size
+    rows = conn.execute(
+        """
+        SELECT video_id, caption, content_type, uploaded_at, uploaded_by
+        FROM videos
+        ORDER BY uploaded_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        (page_size, offset)
+    ).fetchall()
+    conn.close()
+    return {
+        "videos": [dict(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size
+    }
