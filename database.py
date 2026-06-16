@@ -26,12 +26,13 @@ def init_db():
             link        TEXT
         );
         CREATE TABLE IF NOT EXISTS videos (
-            video_id    TEXT PRIMARY KEY,
-            file_id     TEXT NOT NULL,
-            caption     TEXT,
-            uploaded_by INTEGER,
-            uploaded_at TEXT DEFAULT (datetime('now')),
-            view_count  INTEGER DEFAULT 0
+            video_id     TEXT PRIMARY KEY,
+            file_id      TEXT NOT NULL,
+            caption      TEXT,
+            uploaded_by  INTEGER,
+            uploaded_at  TEXT DEFAULT (datetime('now')),
+            view_count   INTEGER DEFAULT 0,
+            content_type TEXT DEFAULT 'video'
         );
         CREATE TABLE IF NOT EXISTS video_views (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +42,15 @@ def init_db():
             FOREIGN KEY (video_id) REFERENCES videos(video_id)
         );
     """)
-    conn.commit()
+
+    # Migration: اگه دیتابیس قدیمی داره و ستون content_type نداره، اضافه‌اش می‌کنیم
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN content_type TEXT DEFAULT 'video'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # ستون قبلاً وجود داره، مشکلی نیست
+        pass
+
     conn.close()
 
 def add_user(user_id, username=None):
@@ -98,10 +107,12 @@ def get_channels():
     conn.close()
     return [dict(r) for r in rows]
 
-def add_video(video_id, file_id, caption, uploaded_by):
+def add_video(video_id, file_id, caption, uploaded_by, content_type="video"):
     conn = get_db()
-    conn.execute("INSERT INTO videos (video_id, file_id, caption, uploaded_by) VALUES (?, ?, ?, ?)",
-                 (video_id, file_id, caption, uploaded_by))
+    conn.execute(
+        "INSERT INTO videos (video_id, file_id, caption, uploaded_by, content_type) VALUES (?, ?, ?, ?, ?)",
+        (video_id, file_id, caption, uploaded_by, content_type)
+    )
     conn.commit()
     conn.close()
 
