@@ -31,13 +31,13 @@ async def check_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
     not_joined = []
     for ch in channels:
         try:
+            # اگر chat_id عددی هست (کانال خصوصی) مستقیم استفاده می‌کنیم
+            # وگرنه با @ برای کانال عمومی
             identifier = int(ch['username']) if ch['username'].lstrip('-').isdigit() else f"@{ch['username']}"
             member = await context.bot.get_chat_member(identifier, user_id)
-            logger.info(f"User {user_id} status in {identifier}: {member.status}")
             if member.status in ("left", "kicked"):
                 not_joined.append(ch)
-        except Exception as e:
-            logger.error(f"Error checking {ch['username']}: {e}")
+        except Exception:
             not_joined.append(ch)
     return not_joined
 
@@ -61,6 +61,134 @@ def require_admin(func):
         return await func(update, context)
     wrapper.__name__ = func.__name__
     return wrapper
+
+
+# ─── Admin Panel (inline keyboard) ──────────────────────────────────────────
+
+def admin_panel_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton("📊 آمار کلی", callback_data="panel_stats")],
+        [InlineKeyboardButton("📢 لیست کانال‌ها", callback_data="panel_channels")],
+        [
+            InlineKeyboardButton("➕ افزودن کانال", callback_data="panel_addchannel"),
+            InlineKeyboardButton("➖ حذف کانال", callback_data="panel_removechannel"),
+        ],
+        [InlineKeyboardButton("🗑 حذف محتوا", callback_data="panel_delvideo")],
+    ]
+    if is_owner(user_id):
+        buttons.append([InlineKeyboardButton("👮 لیست ادمین‌ها", callback_data="panel_admins")])
+        buttons.append([
+            InlineKeyboardButton("➕ افزودن ادمین", callback_data="panel_addadmin"),
+            InlineKeyboardButton("➖ حذف ادمین", callback_data="panel_removeadmin"),
+        ])
+    return InlineKeyboardMarkup(buttons)
+
+
+PANEL_BACK_KB = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="panel_back")]])
+
+PANEL_HELP_TEXTS = {
+    "panel_addchannel": (
+        "➕ *افزودن کانال*\n\n"
+        "این دستور را با اطلاعات کانال ارسال کنید:\n\n"
+        "کانال عمومی:\n`/addchannel @username عنوان لینک`\n\n"
+        "کانال خصوصی:\n`/addchannel -1001234567890 عنوان لینک_دعوت`"
+    ),
+    "panel_removechannel": (
+        "➖ *حذف کانال*\n\n"
+        "این دستور را ارسال کنید:\n`/removechannel @username`\n"
+        "یا برای کانال خصوصی:\n`/removechannel -100xxxxx`"
+    ),
+    "panel_delvideo": (
+        "🗑 *حذف محتوا*\n\n"
+        "این دستور را همراه با شناسه محتوا ارسال کنید:\n`/delvideo <id>`"
+    ),
+    "panel_addadmin": (
+        "➕ *افزودن ادمین*\n\n"
+        "این دستور را ارسال کنید:\n`/addadmin <user_id>`"
+    ),
+    "panel_removeadmin": (
+        "➖ *حذف ادمین*\n\n"
+        "این دستور را ارسال کنید:\n`/removeadmin <user_id>`"
+    ),
+}
+
+
+@require_admin
+async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    await update.message.reply_text(
+        "🛠 *پنل مدیریت*\n\nیکی از گزینه‌های زیر را انتخاب کنید:",
+        parse_mode="Markdown",
+        reply_markup=admin_panel_keyboard(user_id)
+    )
+
+
+async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id) and not is_admin(user_id):
+        await query.answer("⛔ شما دسترسی ادمین ندارید.", show_alert=True)
+        return
+
+    await query.answer()
+    action = query.data
+
+    if action == "panel_back":
+        await query.edit_message_text(
+            "🛠 *پنل مدیریت*\n\nیکی از گزینه‌های زیر را انتخاب کنید:",
+            parse_mode="Markdown",
+            reply_markup=admin_panel_keyboard(user_id)
+        )
+        return
+
+    if action == "panel_stats":
+        total_users = get_users_count()
+        await query.edit_message_text(
+            f"📊 *آمار ربات*\n\n👤 کاربران: {total_users}",
+            parse_mode="Markdown",
+            reply_markup=PANEL_BACK_KB
+        )
+        return
+
+    if action == "panel_channels":
+        channels = get_channels()
+        if not channels:
+            text = "هیچ کانالی ثبت نشده."
+        else:
+            text = "📢 *کانال‌های اجباری:*\n\n"
+            for ch in channels:
+                identifier = ch['username']
+                label = f"-{identifier}" if identifier.lstrip('-').isdigit() else f"@{identifier}"
+                text += f"• {label} — {ch['title']}\n"
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=PANEL_BACK_KB)
+        return
+
+    if action == "panel_admins":
+        if not is_owner(user_id):
+            await query.edit_message_text("⛔ این بخش فقط برای مالک است.", reply_markup=PANEL_BACK_KB)
+            return
+        admins = get_admins()
+        if not admins:
+            text = "هیچ ادمینی ثبت نشده."
+        else:
+            text = "👮 *ادمین‌ها:*\n\n"
+            for a in admins:
+                text += f"• `{a['user_id']}` (اضافه شده توسط {a['added_by']})\n"
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=PANEL_BACK_KB)
+        return
+
+    if action in ("panel_addadmin", "panel_removeadmin") and not is_owner(user_id):
+        await query.edit_message_text("⛔ این بخش فقط برای مالک است.", reply_markup=PANEL_BACK_KB)
+        return
+
+    if action in PANEL_HELP_TEXTS:
+        await query.edit_message_text(
+            PANEL_HELP_TEXTS[action],
+            parse_mode="Markdown",
+            reply_markup=PANEL_BACK_KB
+        )
+        return
 
 
 # ─── Commands ────────────────────────────────────────────────────────────────
@@ -146,13 +274,10 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     not_joined = await check_membership(user_id, context)
     if not_joined:
         kb = membership_keyboard(not_joined, content_id)
-        try:
-            await query.edit_message_text(
-                "⚠️ هنوز در همه کانال‌ها عضو نشده‌اید:",
-                reply_markup=kb
-            )
-        except Exception:
-            pass
+        await query.edit_message_text(
+            "⚠️ هنوز در همه کانال‌ها عضو نشده‌اید:",
+            reply_markup=kb
+        )
         return
 
     video = get_video(content_id)
@@ -196,6 +321,7 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @require_admin
 async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sends a video → bot saves it and returns a shareable link."""
     message = update.message
     if not message.video:
         await message.reply_text("❌ لطفاً یک ویدیو ارسال کنید.")
@@ -206,6 +332,7 @@ async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = message.caption or ""
     uploader = message.from_user.id
 
+    # content_type = "video" برای ویدیو
     add_video(content_id, file_id, caption, uploader, content_type="video")
 
     bot_username = (await context.bot.get_me()).username
@@ -220,16 +347,19 @@ async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_admin
 async def upload_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sends a photo → bot saves it and returns a shareable link."""
     message = update.message
     if not message.photo:
         await message.reply_text("❌ لطفاً یک عکس ارسال کنید.")
         return
 
     content_id = uuid.uuid4().hex[:10]
+    # بزرگترین سایز عکس رو می‌گیریم
     file_id = message.photo[-1].file_id
     caption = message.caption or ""
     uploader = message.from_user.id
 
+    # content_type = "photo" برای عکس
     add_video(content_id, file_id, caption, uploader, content_type="photo")
 
     bot_username = (await context.bot.get_me()).username
@@ -286,6 +416,10 @@ async def delete_video_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 @require_admin
 async def add_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    کانال عمومی:  /addchannel @username عنوان https://t.me/...
+    کانال خصوصی: /addchannel -1001234567890 عنوان https://t.me/+invite_link
+    """
     args = context.args
     if len(args) < 3:
         await update.message.reply_text(
@@ -294,7 +428,7 @@ async def add_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "کانال خصوصی: /addchannel -1001234567890 عنوان لینک_دعوت"
         )
         return
-    username = args[0].lstrip("@")
+    username = args[0].lstrip("@")   # برای کانال خصوصی عدد منفی می‌مونه
     title = args[1]
     link = args[2]
     add_channel(username, title, link)
@@ -381,26 +515,10 @@ async def list_admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_owner(user_id) or is_admin(user_id):
-        text = (
-            "🛠 *دستورات ادمین:*\n\n"
-            "📤 ارسال ویدیو یا عکس → ربات لینک می‌دهد\n\n"
-            "*کانال‌ها:*\n"
-            "/addchannel @username عنوان لینک\n"
-            "/addchannel \\-100xxx عنوان لینک\\_دعوت _(کانال خصوصی)_\n"
-            "/removechannel @username\n"
-            "/channels — لیست کانال‌ها\n\n"
-            "*محتوا:*\n"
-            "/stats — آمار کلی\n"
-            "/stats <id> — آمار محتوا\n"
-            "/delvideo <id> — حذف محتوا\n\n"
-            "*ادمین (فقط مالک):*\n"
-            "/addadmin <id>\n"
-            "/removeadmin <id>\n"
-            "/admins"
-        )
+        text = "🛠 برای دسترسی به پنل مدیریت، دستور /panel را بفرستید."
     else:
         text = "برای دریافت ویدیو یا عکس، لینک مستقیم را باز کنید. 🎬"
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -411,6 +529,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("panel", panel_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("delvideo", delete_video_command))
     app.add_handler(CommandHandler("addchannel", add_channel_command))
@@ -420,10 +539,12 @@ def main():
     app.add_handler(CommandHandler("removeadmin", remove_admin_command))
     app.add_handler(CommandHandler("admins", list_admins_command))
 
+    # هندلر ویدیو و عکس جدا
     app.add_handler(MessageHandler(filters.VIDEO & filters.ChatType.PRIVATE, upload_video))
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, upload_photo))
 
     app.add_handler(CallbackQueryHandler(check_join_callback, pattern=r"^check_"))
+    app.add_handler(CallbackQueryHandler(panel_callback, pattern=r"^panel_"))
 
     logger.info("Bot started...")
     app.run_polling(drop_pending_updates=True)
