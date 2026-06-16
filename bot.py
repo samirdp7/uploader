@@ -31,13 +31,13 @@ async def check_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
     not_joined = []
     for ch in channels:
         try:
-            # اگر chat_id عددی هست (کانال خصوصی) مستقیم استفاده می‌کنیم
-            # وگرنه با @ برای کانال عمومی
             identifier = int(ch['username']) if ch['username'].lstrip('-').isdigit() else f"@{ch['username']}"
             member = await context.bot.get_chat_member(identifier, user_id)
+            logger.info(f"User {user_id} status in {identifier}: {member.status}")
             if member.status in ("left", "kicked"):
                 not_joined.append(ch)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error checking {ch['username']}: {e}")
             not_joined.append(ch)
     return not_joined
 
@@ -146,10 +146,13 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     not_joined = await check_membership(user_id, context)
     if not_joined:
         kb = membership_keyboard(not_joined, content_id)
-        await query.edit_message_text(
-            "⚠️ هنوز در همه کانال‌ها عضو نشده‌اید:",
-            reply_markup=kb
-        )
+        try:
+            await query.edit_message_text(
+                "⚠️ هنوز در همه کانال‌ها عضو نشده‌اید:",
+                reply_markup=kb
+            )
+        except Exception:
+            pass
         return
 
     video = get_video(content_id)
@@ -193,7 +196,6 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @require_admin
 async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin sends a video → bot saves it and returns a shareable link."""
     message = update.message
     if not message.video:
         await message.reply_text("❌ لطفاً یک ویدیو ارسال کنید.")
@@ -204,7 +206,6 @@ async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = message.caption or ""
     uploader = message.from_user.id
 
-    # content_type = "video" برای ویدیو
     add_video(content_id, file_id, caption, uploader, content_type="video")
 
     bot_username = (await context.bot.get_me()).username
@@ -219,19 +220,16 @@ async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_admin
 async def upload_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin sends a photo → bot saves it and returns a shareable link."""
     message = update.message
     if not message.photo:
         await message.reply_text("❌ لطفاً یک عکس ارسال کنید.")
         return
 
     content_id = uuid.uuid4().hex[:10]
-    # بزرگترین سایز عکس رو می‌گیریم
     file_id = message.photo[-1].file_id
     caption = message.caption or ""
     uploader = message.from_user.id
 
-    # content_type = "photo" برای عکس
     add_video(content_id, file_id, caption, uploader, content_type="photo")
 
     bot_username = (await context.bot.get_me()).username
@@ -288,10 +286,6 @@ async def delete_video_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 @require_admin
 async def add_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    کانال عمومی:  /addchannel @username عنوان https://t.me/...
-    کانال خصوصی: /addchannel -1001234567890 عنوان https://t.me/+invite_link
-    """
     args = context.args
     if len(args) < 3:
         await update.message.reply_text(
@@ -300,7 +294,7 @@ async def add_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "کانال خصوصی: /addchannel -1001234567890 عنوان لینک_دعوت"
         )
         return
-    username = args[0].lstrip("@")   # برای کانال خصوصی عدد منفی می‌مونه
+    username = args[0].lstrip("@")
     title = args[1]
     link = args[2]
     add_channel(username, title, link)
@@ -426,7 +420,6 @@ def main():
     app.add_handler(CommandHandler("removeadmin", remove_admin_command))
     app.add_handler(CommandHandler("admins", list_admins_command))
 
-    # هندلر ویدیو و عکس جدا
     app.add_handler(MessageHandler(filters.VIDEO & filters.ChatType.PRIVATE, upload_video))
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, upload_photo))
 
