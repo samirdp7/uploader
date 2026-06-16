@@ -471,4 +471,3 @@ def get_bundles_paginated(page: int = 0, page_size: int = 5) -> dict:
         }
     finally:
         conn.close()
-ENDOFFILE
