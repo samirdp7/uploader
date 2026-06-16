@@ -10,7 +10,8 @@ import asyncio
 from database import (
     init_db, add_user, get_users_count, is_admin, add_admin, remove_admin,
     get_admins, add_channel, remove_channel, get_channels,
-    add_video, get_video, delete_video, increment_view, get_video_stats
+    add_video, get_video, delete_video, increment_view, get_video_stats,
+    get_videos_paginated
 )
 
 logging.basicConfig(
@@ -21,18 +22,16 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
+PAGE_SIZE = 5
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
 async def check_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> list[dict]:
-    """Return list of channels the user has NOT joined."""
     channels = get_channels()
     not_joined = []
     for ch in channels:
         try:
-            # اگر chat_id عددی هست (کانال خصوصی) مستقیم استفاده می‌کنیم
-            # وگرنه با @ برای کانال عمومی
             identifier = int(ch['username']) if ch['username'].lstrip('-').isdigit() else f"@{ch['username']}"
             member = await context.bot.get_chat_member(identifier, user_id)
             if member.status in ("left", "kicked"):
@@ -73,6 +72,7 @@ def admin_panel_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("➕ افزودن کانال", callback_data="panel_addchannel"),
             InlineKeyboardButton("➖ حذف کانال", callback_data="panel_removechannel"),
         ],
+        [InlineKeyboardButton("🎬 لیست محتواها", callback_data="panel_videos_0")],
         [InlineKeyboardButton("🗑 حذف محتوا", callback_data="panel_delvideo")],
     ]
     if is_owner(user_id):
@@ -112,6 +112,60 @@ PANEL_HELP_TEXTS = {
     ),
 }
 
+
+# ─── Videos list with pagination ─────────────────────────────────────────────
+
+async def show_videos_page(query, page: int):
+    data = get_videos_paginated(page=page, page_size=PAGE_SIZE)
+    videos = data["videos"]
+    total = data["total"]
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    if not videos:
+        await query.edit_message_text(
+            "📭 هیچ محتوایی آپلود نشده.",
+            reply_markup=PANEL_BACK_KB
+        )
+        return
+
+    bot_username = (await query.bot.get_me()).username
+
+    text = f"🎬 *لیست محتواها* (صفحه {page + 1} از {total_pages} | مجموع: {total})\n\n"
+    for v in videos:
+        icon = "🖼" if v["content_type"] == "photo" else "🎬"
+        caption_preview = ""
+        if v["caption"]:
+            caption_preview = (v["caption"][:25] + "…") if len(v["caption"]) > 25 else v["caption"]
+        else:
+            caption_preview = "بدون کپشن"
+        link = f"https://t.me/{bot_username}?start={v['video_id']}"
+        text += (
+            f"{icon} `{v['video_id']}`\n"
+            f"   📝 {caption_preview}\n"
+            f"   🔗 [لینک دریافت]({link})\n"
+            f"   📅 {v['uploaded_at'][:16]}\n\n"
+        )
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"panel_videos_{page - 1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("➡️ بعدی", callback_data=f"panel_videos_{page + 1}"))
+
+    buttons = []
+    if nav_buttons:
+        buttons.append(nav_buttons)
+    buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="panel_back")])
+
+    await query.edit_message_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=True
+    )
+
+
+# ─── Panel command & callback ─────────────────────────────────────────────────
 
 @require_admin
 async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -180,6 +234,12 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action in ("panel_addadmin", "panel_removeadmin") and not is_owner(user_id):
         await query.edit_message_text("⛔ این بخش فقط برای مالک است.", reply_markup=PANEL_BACK_KB)
+        return
+
+    # ─── لیست محتواها با صفحه‌بندی ───
+    if action.startswith("panel_videos_"):
+        page = int(action.split("_")[-1])
+        await show_videos_page(query, page)
         return
 
     if action in PANEL_HELP_TEXTS:
@@ -321,7 +381,6 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @require_admin
 async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin sends a video → bot saves it and returns a shareable link."""
     message = update.message
     if not message.video:
         await message.reply_text("❌ لطفاً یک ویدیو ارسال کنید.")
@@ -332,7 +391,6 @@ async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = message.caption or ""
     uploader = message.from_user.id
 
-    # content_type = "video" برای ویدیو
     add_video(content_id, file_id, caption, uploader, content_type="video")
 
     bot_username = (await context.bot.get_me()).username
@@ -347,19 +405,16 @@ async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_admin
 async def upload_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin sends a photo → bot saves it and returns a shareable link."""
     message = update.message
     if not message.photo:
         await message.reply_text("❌ لطفاً یک عکس ارسال کنید.")
         return
 
     content_id = uuid.uuid4().hex[:10]
-    # بزرگترین سایز عکس رو می‌گیریم
     file_id = message.photo[-1].file_id
     caption = message.caption or ""
     uploader = message.from_user.id
 
-    # content_type = "photo" برای عکس
     add_video(content_id, file_id, caption, uploader, content_type="photo")
 
     bot_username = (await context.bot.get_me()).username
@@ -416,10 +471,6 @@ async def delete_video_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 @require_admin
 async def add_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    کانال عمومی:  /addchannel @username عنوان https://t.me/...
-    کانال خصوصی: /addchannel -1001234567890 عنوان https://t.me/+invite_link
-    """
     args = context.args
     if len(args) < 3:
         await update.message.reply_text(
@@ -428,7 +479,7 @@ async def add_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "کانال خصوصی: /addchannel -1001234567890 عنوان لینک_دعوت"
         )
         return
-    username = args[0].lstrip("@")   # برای کانال خصوصی عدد منفی می‌مونه
+    username = args[0].lstrip("@")
     title = args[1]
     link = args[2]
     add_channel(username, title, link)
@@ -539,7 +590,6 @@ def main():
     app.add_handler(CommandHandler("removeadmin", remove_admin_command))
     app.add_handler(CommandHandler("admins", list_admins_command))
 
-    # هندلر ویدیو و عکس جدا
     app.add_handler(MessageHandler(filters.VIDEO & filters.ChatType.PRIVATE, upload_video))
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, upload_photo))
 
