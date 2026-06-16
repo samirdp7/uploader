@@ -7,7 +7,7 @@ DB_PATH = "/data/bot.db"
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")   # بهتر برای همزمانی
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -45,10 +45,8 @@ def init_db():
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 video_id    TEXT NOT NULL,
                 user_id     INTEGER NOT NULL,
-                viewed_at   TEXT DEFAULT (datetime('now')),
-                FOREIGN KEY (video_id) REFERENCES videos(video_id) ON DELETE CASCADE
+                viewed_at   TEXT DEFAULT (datetime('now'))
             );
-
             CREATE TABLE IF NOT EXISTS spam_log (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id     INTEGER NOT NULL,
@@ -62,7 +60,6 @@ def init_db():
                 key         TEXT PRIMARY KEY,
                 value       TEXT NOT NULL
             );
-
             CREATE TABLE IF NOT EXISTS bundles (
                 bundle_id   TEXT PRIMARY KEY,
                 title       TEXT NOT NULL,
@@ -73,11 +70,8 @@ def init_db():
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 bundle_id   TEXT NOT NULL,
                 video_id    TEXT NOT NULL,
-                position    INTEGER DEFAULT 0,
-                FOREIGN KEY (bundle_id) REFERENCES bundles(bundle_id) ON DELETE CASCADE,
-                FOREIGN KEY (video_id)  REFERENCES videos(video_id)   ON DELETE CASCADE
+                position    INTEGER DEFAULT 0
             );
-
             CREATE INDEX IF NOT EXISTS idx_spam_log_user_time
                 ON spam_log(user_id, hit_at);
             CREATE INDEX IF NOT EXISTS idx_video_views_video
@@ -86,14 +80,13 @@ def init_db():
                 ON bundle_items(bundle_id);
         """)
 
-        # مهاجرت: اضافه کردن content_type اگه نبود
+        # مهاجرت content_type
         try:
             conn.execute("ALTER TABLE videos ADD COLUMN content_type TEXT DEFAULT 'video'")
             conn.commit()
         except sqlite3.OperationalError:
             pass
 
-        # مقادیر پیش‌فرض تنظیمات ضد اسپم
         defaults = [
             ("spam_max_hits",       "4"),
             ("spam_window_seconds", "60"),
@@ -211,8 +204,7 @@ def add_video(video_id: str, file_id: str, caption: str,
     conn = get_db()
     try:
         conn.execute(
-            """INSERT INTO videos (video_id, file_id, caption, uploaded_by, content_type)
-               VALUES (?, ?, ?, ?, ?)""",
+            "INSERT INTO videos (video_id, file_id, caption, uploaded_by, content_type) VALUES (?, ?, ?, ?, ?)",
             (video_id, file_id, caption or "", uploaded_by, content_type)
         )
         conn.commit()
@@ -232,13 +224,12 @@ def get_video(video_id: str) -> dict | None:
 
 
 def delete_video(video_id: str):
-    """
-    حذف ویدیو + همه view ها و bundle_item های مرتبط.
-    چون ON DELETE CASCADE فعاله، فقط حذف از videos کافیه.
-    """
+    """حذف ویدیو و همه داده‌های مرتبط به صورت دستی (بدون CASCADE)."""
     conn = get_db()
     try:
-        conn.execute("DELETE FROM videos WHERE video_id = ?", (video_id,))
+        conn.execute("DELETE FROM video_views   WHERE video_id = ?", (video_id,))
+        conn.execute("DELETE FROM bundle_items  WHERE video_id = ?", (video_id,))
+        conn.execute("DELETE FROM videos        WHERE video_id = ?", (video_id,))
         conn.commit()
     finally:
         conn.close()
@@ -261,11 +252,6 @@ def increment_view(video_id: str, user_id: int):
 
 
 def get_video_stats(video_id: str) -> dict | None:
-    """
-    برگرداندن آمار ویدیو.
-    باگ قبلی: اگه هیچ view ای نبود GROUP BY چیزی برنمی‌گردوند.
-    حل: LEFT JOIN + COALESCE برای شمارش یکتا بینندگان.
-    """
     conn = get_db()
     try:
         row = conn.execute("""
@@ -309,9 +295,7 @@ def get_videos_paginated(page: int = 0, page_size: int = 5) -> dict:
 def get_setting(key: str) -> str | None:
     conn = get_db()
     try:
-        row = conn.execute(
-            "SELECT value FROM settings WHERE key = ?", (key,)
-        ).fetchone()
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None
     finally:
         conn.close()
@@ -321,8 +305,7 @@ def set_setting(key: str, value: str):
     conn = get_db()
     try:
         conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-            (key, value)
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value)
         )
         conn.commit()
     finally:
@@ -343,37 +326,18 @@ def get_spam_settings() -> dict:
 # ─── Anti-Spam ───────────────────────────────────────────────────────────────
 
 def check_and_record_spam(user_id: int) -> dict:
-    """
-    بررسی اسپم و ثبت درخواست کاربر.
-
-    خروجی:
-        {"blocked": True,  "seconds_left": N}
-            ← کاربر هنوز بلاک است
-        {"blocked": False, "just_blocked": True, "seconds_left": N}
-            ← همین الان بلاک شد
-        {"blocked": False, "just_blocked": False}
-            ← مجاز است
-
-    تغییرات نسبت به نسخه قبل:
-        - import ها به بالای فایل منتقل شدن
-        - try/finally برای جلوگیری از connection leak
-        - پاکسازی spam_log موقع expire بلاک
-        - استفاده از یک transaction برای ثبت + شمارش (کمتر race condition)
-    """
-    cfg = get_spam_settings()
+    cfg        = get_spam_settings()
     max_hits   = cfg.get("spam_max_hits",       4)
     window_sec = cfg.get("spam_window_seconds", 60)
     block_sec  = cfg.get("spam_block_seconds",  120)
 
     conn = get_db()
     try:
-        now = datetime.utcnow()
+        now     = datetime.utcnow()
         now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
-        # ── بررسی بلاک فعلی ──────────────────────────────────────────────
         block_row = conn.execute(
-            "SELECT blocked_until FROM spam_blocks WHERE user_id = ?",
-            (user_id,)
+            "SELECT blocked_until FROM spam_blocks WHERE user_id = ?", (user_id,)
         ).fetchone()
 
         if block_row:
@@ -382,19 +346,15 @@ def check_and_record_spam(user_id: int) -> dict:
                 seconds_left = int((blocked_until - now).total_seconds())
                 return {"blocked": True, "seconds_left": seconds_left}
             else:
-                # بلاک منقضی شده، پاکسازی
                 conn.execute("DELETE FROM spam_blocks WHERE user_id = ?", (user_id,))
                 conn.execute("DELETE FROM spam_log    WHERE user_id = ?", (user_id,))
                 conn.commit()
 
-        # ── ثبت این درخواست ──────────────────────────────────────────────
         conn.execute(
-            "INSERT INTO spam_log (user_id, hit_at) VALUES (?, ?)",
-            (user_id, now_str)
+            "INSERT INTO spam_log (user_id, hit_at) VALUES (?, ?)", (user_id, now_str)
         )
         conn.commit()
 
-        # ── شمارش در پنجره زمانی ─────────────────────────────────────────
         window_start = (now - timedelta(seconds=window_sec)).strftime("%Y-%m-%d %H:%M:%S")
         count = conn.execute(
             "SELECT COUNT(*) FROM spam_log WHERE user_id = ? AND hit_at >= ?",
@@ -402,8 +362,7 @@ def check_and_record_spam(user_id: int) -> dict:
         ).fetchone()[0]
 
         if count > max_hits:
-            blocked_until     = now + timedelta(seconds=block_sec)
-            blocked_until_str = blocked_until.strftime("%Y-%m-%d %H:%M:%S")
+            blocked_until_str = (now + timedelta(seconds=block_sec)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
                 "INSERT OR REPLACE INTO spam_blocks (user_id, blocked_until) VALUES (?, ?)",
                 (user_id, blocked_until_str)
@@ -412,7 +371,6 @@ def check_and_record_spam(user_id: int) -> dict:
             return {"blocked": False, "just_blocked": True, "seconds_left": block_sec}
 
         return {"blocked": False, "just_blocked": False}
-
     finally:
         conn.close()
 
@@ -481,14 +439,11 @@ def get_bundle_videos(bundle_id: str) -> list[dict]:
 
 
 def delete_bundle(bundle_id: str):
-    """
-    حذف باندل + همه bundle_items مرتبط.
-    چون ON DELETE CASCADE فعاله، فقط حذف از bundles کافیه.
-    ویدیوهای داخل باندل حذف نمی‌شن (فقط رابطه قطع می‌شه).
-    """
+    """حذف باندل و bundle_items آن. ویدیوها حذف نمی‌شن."""
     conn = get_db()
     try:
-        conn.execute("DELETE FROM bundles WHERE bundle_id = ?", (bundle_id,))
+        conn.execute("DELETE FROM bundle_items WHERE bundle_id = ?", (bundle_id,))
+        conn.execute("DELETE FROM bundles      WHERE bundle_id = ?", (bundle_id,))
         conn.commit()
     finally:
         conn.close()
@@ -497,9 +452,9 @@ def delete_bundle(bundle_id: str):
 def get_bundles_paginated(page: int = 0, page_size: int = 5) -> dict:
     conn = get_db()
     try:
-        total = conn.execute("SELECT COUNT(*) FROM bundles").fetchone()[0]
+        total  = conn.execute("SELECT COUNT(*) FROM bundles").fetchone()[0]
         offset = page * page_size
-        rows = conn.execute("""
+        rows   = conn.execute("""
             SELECT b.bundle_id, b.title, b.created_at,
                    COUNT(bi.id) AS item_count
             FROM bundles b
@@ -516,3 +471,4 @@ def get_bundles_paginated(page: int = 0, page_size: int = 5) -> dict:
         }
     finally:
         conn.close()
+ENDOFFILE
