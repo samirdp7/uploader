@@ -29,7 +29,6 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 OWNER_ID  = int(os.environ.get("OWNER_ID", "0"))
 PAGE_SIZE = 5
 
-# session های ساخت باندل  {user_id: {"bundle_id": str, "title": str, "videos": list}}
 bundle_sessions: dict[int, dict] = {}
 
 
@@ -38,7 +37,6 @@ bundle_sessions: dict[int, dict] = {}
 # ═══════════════════════════════════════════════════════════════
 
 def escape_md(text: str) -> str:
-    """Escape کاراکترهای خاص MarkdownV2."""
     if not text:
         return ""
     for ch in r"\_*[]()~`>#+-=|{}.!":
@@ -62,7 +60,6 @@ def require_admin(func):
 
 
 async def check_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> list[dict]:
-    """کانال‌هایی که کاربر عضو نیست را برمی‌گرداند."""
     not_joined = []
     for ch in get_channels():
         try:
@@ -88,25 +85,28 @@ def membership_keyboard(not_joined: list[dict], content_id: str) -> InlineKeyboa
     return InlineKeyboardMarkup(buttons)
 
 
-def schedule_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
-                    message_id: int, delay: int = 60):
-    """حذف پیام با تأخیر از طریق job_queue (پایدارتر از create_task)."""
-    async def _delete(ctx: ContextTypes.DEFAULT_TYPE):
+async def _delete_messages_after(bot, messages: list, delay: int = 60):
+    """حذف پیام‌ها بعد از تأخیر - با asyncio.sleep مستقیم داخل task."""
+    await asyncio.sleep(delay)
+    for chat_id, message_id in messages:
         try:
-            await ctx.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
         except Exception:
             pass
 
-    context.application.job_queue.run_once(
-        _delete,
-        when=delay,
-        name=f"del_{chat_id}_{message_id}",
+
+def schedule_delete(context: ContextTypes.DEFAULT_TYPE, messages: list, delay: int = 60):
+    """
+    زمان‌بندی حذف چند پیام.
+    messages: لیست تاپل‌های (chat_id, message_id)
+    """
+    asyncio.ensure_future(
+        _delete_messages_after(context.bot, messages, delay)
     )
 
 
 async def _send_media(context: ContextTypes.DEFAULT_TYPE,
                       chat_id: int, video: dict, caption: str):
-    """ارسال عکس یا ویدیو بر اساس content_type."""
     if video.get("content_type") == "photo":
         return await context.bot.send_photo(
             chat_id=chat_id, photo=video["file_id"], caption=caption
@@ -122,20 +122,20 @@ async def _send_media(context: ContextTypes.DEFAULT_TYPE,
 
 def admin_panel_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton("📊 آمار کلی",          callback_data="panel_stats")],
-        [InlineKeyboardButton("📢 لیست کانال‌ها",      callback_data="panel_channels")],
+        [InlineKeyboardButton("📊 آمار کلی",        callback_data="panel_stats")],
+        [InlineKeyboardButton("📢 لیست کانال‌ها",    callback_data="panel_channels")],
         [
-            InlineKeyboardButton("➕ افزودن کانال",    callback_data="panel_addchannel"),
-            InlineKeyboardButton("➖ حذف کانال",       callback_data="panel_removechannel"),
+            InlineKeyboardButton("➕ افزودن کانال",  callback_data="panel_addchannel"),
+            InlineKeyboardButton("➖ حذف کانال",     callback_data="panel_removechannel"),
         ],
-        [InlineKeyboardButton("🎬 لیست محتواها",       callback_data="panel_videos_0")],
-        [InlineKeyboardButton("🗑 حذف محتوا",          callback_data="panel_delvideo")],
-        [InlineKeyboardButton("📦 لیست باندل‌ها",      callback_data="panel_bundles_0")],
-        [InlineKeyboardButton("🚫 تنظیمات ضد اسپم",   callback_data="panel_spam_settings")],
+        [InlineKeyboardButton("🎬 لیست محتواها",     callback_data="panel_videos_0")],
+        [InlineKeyboardButton("🗑 حذف محتوا",        callback_data="panel_delvideo")],
+        [InlineKeyboardButton("📦 لیست باندل‌ها",    callback_data="panel_bundles_0")],
+        [InlineKeyboardButton("🚫 تنظیمات ضد اسپم", callback_data="panel_spam_settings")],
     ]
     if is_owner(user_id):
         buttons += [
-            [InlineKeyboardButton("👮 لیست ادمین‌ها",  callback_data="panel_admins")],
+            [InlineKeyboardButton("👮 لیست ادمین‌ها", callback_data="panel_admins")],
             [
                 InlineKeyboardButton("➕ افزودن ادمین", callback_data="panel_addadmin"),
                 InlineKeyboardButton("➖ حذف ادمین",    callback_data="panel_removeadmin"),
@@ -159,20 +159,14 @@ PANEL_HELP_TEXTS: dict[str, str] = {
         "`/removechannel @username`\n"
         "یا: `/removechannel -100xxxxx`"
     ),
-    "panel_delvideo": (
-        "🗑 *حذف محتوا*\n\n`/delvideo <id>`"
-    ),
-    "panel_addadmin": (
-        "➕ *افزودن ادمین*\n\n`/addadmin <user_id>`"
-    ),
-    "panel_removeadmin": (
-        "➖ *حذف ادمین*\n\n`/removeadmin <user_id>`"
-    ),
+    "panel_delvideo":    "🗑 *حذف محتوا*\n\n`/delvideo <id>`",
+    "panel_addadmin":    "➕ *افزودن ادمین*\n\n`/addadmin <user_id>`",
+    "panel_removeadmin": "➖ *حذف ادمین*\n\n`/removeadmin <user_id>`",
 }
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Spam Settings Panel
+#  Spam Settings
 # ═══════════════════════════════════════════════════════════════
 
 SPAM_STEPS: dict[str, tuple] = {
@@ -203,16 +197,16 @@ def spam_settings_keyboard() -> InlineKeyboardMarkup:
     window = cfg.get("spam_window_seconds", 60)
     block  = cfg.get("spam_block_seconds",  120)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"🔢 حداکثر درخواست: {hits}",    callback_data="spam_noop")],
+        [InlineKeyboardButton(f"🔢 حداکثر درخواست: {hits}",  callback_data="spam_noop")],
         [InlineKeyboardButton("➖", callback_data="spam_hits_dec"),
          InlineKeyboardButton("➕", callback_data="spam_hits_inc")],
-        [InlineKeyboardButton(f"⏱ پنجره زمانی: {window}ث",     callback_data="spam_noop")],
+        [InlineKeyboardButton(f"⏱ پنجره زمانی: {window}ث",   callback_data="spam_noop")],
         [InlineKeyboardButton("➖", callback_data="spam_window_dec"),
          InlineKeyboardButton("➕", callback_data="spam_window_inc")],
-        [InlineKeyboardButton(f"🔒 مدت بلاک: {block}ث",         callback_data="spam_noop")],
+        [InlineKeyboardButton(f"🔒 مدت بلاک: {block}ث",       callback_data="spam_noop")],
         [InlineKeyboardButton("➖", callback_data="spam_block_dec"),
          InlineKeyboardButton("➕", callback_data="spam_block_inc")],
-        [InlineKeyboardButton("🔙 بازگشت",                      callback_data="panel_back")],
+        [InlineKeyboardButton("🔙 بازگشت",                    callback_data="panel_back")],
     ])
 
 
@@ -350,7 +344,6 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
 
-    # ── بازگشت ───────────────────────────────────────────────────────────────
     if action == "panel_back":
         await query.edit_message_text(
             "🛠 *پنل مدیریت*\n\nیکی از گزینه‌های زیر را انتخاب کنید:",
@@ -359,7 +352,6 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── آمار ─────────────────────────────────────────────────────────────────
     if action == "panel_stats":
         await query.edit_message_text(
             f"📊 *آمار ربات*\n\n👤 کاربران: {get_users_count()}",
@@ -368,7 +360,6 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── کانال‌ها ──────────────────────────────────────────────────────────────
     if action == "panel_channels":
         channels = get_channels()
         if not channels:
@@ -382,7 +373,6 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=PANEL_BACK_KB)
         return
 
-    # ── ادمین‌ها (فقط مالک) ───────────────────────────────────────────────────
     if action == "panel_admins":
         if not is_owner(uid):
             await query.edit_message_text("⛔ این بخش فقط برای مالک است.", reply_markup=PANEL_BACK_KB)
@@ -399,19 +389,16 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⛔ این بخش فقط برای مالک است.", reply_markup=PANEL_BACK_KB)
         return
 
-    # ── لیست محتواها ─────────────────────────────────────────────────────────
     if action.startswith("panel_videos_"):
-        page = int(action.rsplit("_", 1)[-1]) if action.rsplit("_", 1)[-1].isdigit() else 0
-        await show_videos_page(query, context, page)
+        part = action.rsplit("_", 1)[-1]
+        await show_videos_page(query, context, int(part) if part.isdigit() else 0)
         return
 
-    # ── لیست باندل‌ها ─────────────────────────────────────────────────────────
     if action.startswith("panel_bundles_"):
-        page = int(action.rsplit("_", 1)[-1]) if action.rsplit("_", 1)[-1].isdigit() else 0
-        await show_bundles_page(query, context, page)
+        part = action.rsplit("_", 1)[-1]
+        await show_bundles_page(query, context, int(part) if part.isdigit() else 0)
         return
 
-    # ── حذف باندل راهنما ─────────────────────────────────────────────────────
     if action == "panel_delbundle":
         await query.edit_message_text(
             "🗑 *حذف باندل*\n\n`/delbundle <bundle_id>`",
@@ -420,7 +407,6 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── تنظیمات ضد اسپم ──────────────────────────────────────────────────────
     if action == "panel_spam_settings":
         await query.edit_message_text(
             spam_settings_text(),
@@ -429,7 +415,6 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── متون راهنما ──────────────────────────────────────────────────────────
     if action in PANEL_HELP_TEXTS:
         await query.edit_message_text(
             PANEL_HELP_TEXTS[action],
@@ -440,7 +425,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Spam Settings Callback
+#  Spam Callback
 # ═══════════════════════════════════════════════════════════════
 
 async def spam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -457,7 +442,7 @@ async def spam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "spam_noop":
         return
 
-    parts = action.split("_")          # ['spam', 'hits', 'inc']
+    parts = action.split("_")
     if len(parts) != 3:
         return
 
@@ -548,8 +533,8 @@ async def send_content_to_user(update: Update, context: ContextTypes.DEFAULT_TYP
         text="⏳ این محتوا بعد از ۱ دقیقه حذف می‌شود.",
         reply_to_message_id=sent.message_id,
     )
-    schedule_delete(context, sent.chat_id,   sent.message_id,   60)
-    schedule_delete(context, notice.chat_id, notice.message_id, 60)
+    schedule_delete(context, [(sent.chat_id, sent.message_id),
+                               (notice.chat_id, notice.message_id)], delay=60)
 
 
 async def send_bundle_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE, bundle_id: str):
@@ -578,7 +563,7 @@ async def send_bundle_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"📦 *{bundle['title']}*\n🎬 {len(videos)} محتوا در حال ارسال...",
         parse_mode="Markdown",
     )
-    sent_messages = [header]
+    to_delete = [(header.chat_id, header.message_id)]
 
     for i, video in enumerate(videos, 1):
         increment_view(video["video_id"], uid)
@@ -586,17 +571,15 @@ async def send_bundle_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
         view_count = stats["view_count"] if stats else 0
         caption    = (video.get("caption") or "") + f"\n\n[{i}/{len(videos)}] 👁 {view_count} بازدید"
         sent       = await _send_media(context, update.effective_chat.id, video, caption)
-        sent_messages.append(sent)
+        to_delete.append((sent.chat_id, sent.message_id))
         await asyncio.sleep(0.3)
 
     notice = await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=f"⏳ {len(videos)} محتوای ارسال‌شده بعد از ۱ دقیقه حذف می‌شوند.",
     )
-    sent_messages.append(notice)
-
-    for msg in sent_messages:
-        schedule_delete(context, msg.chat_id, msg.message_id, 60)
+    to_delete.append((notice.chat_id, notice.message_id))
+    schedule_delete(context, to_delete, delay=60)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -636,23 +619,23 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             text=f"📦 *{bundle['title']}*\n🎬 {len(videos)} محتوا در حال ارسال...",
             parse_mode="Markdown",
         )
-        sent_messages = [header]
+        to_delete = [(header.chat_id, header.message_id)]
+
         for i, video in enumerate(videos, 1):
             increment_view(video["video_id"], uid)
             stats      = get_video_stats(video["video_id"])
             view_count = stats["view_count"] if stats else 0
             caption    = (video.get("caption") or "") + f"\n\n[{i}/{len(videos)}] 👁 {view_count} بازدید"
             sent       = await _send_media(context, chat_id, video, caption)
-            sent_messages.append(sent)
+            to_delete.append((sent.chat_id, sent.message_id))
             await asyncio.sleep(0.3)
 
         notice = await context.bot.send_message(
             chat_id=chat_id,
             text=f"⏳ {len(videos)} محتوای ارسال‌شده بعد از ۱ دقیقه حذف می‌شوند.",
         )
-        sent_messages.append(notice)
-        for msg in sent_messages:
-            schedule_delete(context, msg.chat_id, msg.message_id, 60)
+        to_delete.append((notice.chat_id, notice.message_id))
+        schedule_delete(context, to_delete, delay=60)
 
     else:
         video = get_video(content_id)
@@ -669,8 +652,8 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             text="⏳ این محتوا بعد از ۱ دقیقه حذف می‌شود.",
             reply_to_message_id=sent.message_id,
         )
-        schedule_delete(context, sent.chat_id,   sent.message_id,   60)
-        schedule_delete(context, notice.chat_id, notice.message_id, 60)
+        schedule_delete(context, [(sent.chat_id, sent.message_id),
+                                   (notice.chat_id, notice.message_id)], delay=60)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -694,18 +677,18 @@ async def upload_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_to_bundle(session["bundle_id"], content_id, len(session["videos"]))
         session["videos"].append(content_id)
         await message.reply_text(
-            f"✅ ویدیو {len(session['videos'])} به باندل اضافه شد\\.\n"
-            f"📦 باندل: *{escape_md(session['title'])}*\n\n"
-            "ادامه بده یا /donebundle برای پایان\\.",
-            parse_mode="MarkdownV2",
+            f"✅ ویدیو {len(session['videos'])} به باندل اضافه شد.\n"
+            f"📦 باندل: *{session['title']}*\n\n"
+            "ادامه بده یا /donebundle برای پایان.",
+            parse_mode="Markdown",
         )
         return
 
     bot_username = (await context.bot.get_me()).username
     link = f"https://t.me/{bot_username}?start={content_id}"
     await message.reply_text(
-        f"✅ ویدیو ذخیره شد\\!\n\n🆔 شناسه: `{content_id}`\n🔗 لینک: {escape_md(link)}",
-        parse_mode="MarkdownV2",
+        f"✅ ویدیو ذخیره شد!\n\n🆔 شناسه: `{content_id}`\n🔗 لینک: {link}",
+        parse_mode="Markdown",
     )
 
 
@@ -726,18 +709,18 @@ async def upload_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_to_bundle(session["bundle_id"], content_id, len(session["videos"]))
         session["videos"].append(content_id)
         await message.reply_text(
-            f"✅ عکس {len(session['videos'])} به باندل اضافه شد\\.\n"
-            f"📦 باندل: *{escape_md(session['title'])}*\n\n"
-            "ادامه بده یا /donebundle برای پایان\\.",
-            parse_mode="MarkdownV2",
+            f"✅ عکس {len(session['videos'])} به باندل اضافه شد.\n"
+            f"📦 باندل: *{session['title']}*\n\n"
+            "ادامه بده یا /donebundle برای پایان.",
+            parse_mode="Markdown",
         )
         return
 
     bot_username = (await context.bot.get_me()).username
     link = f"https://t.me/{bot_username}?start={content_id}"
     await message.reply_text(
-        f"✅ عکس ذخیره شد\\!\n\n🆔 شناسه: `{content_id}`\n🔗 لینک: {escape_md(link)}",
-        parse_mode="MarkdownV2",
+        f"✅ عکس ذخیره شد!\n\n🆔 شناسه: `{content_id}`\n🔗 لینک: {link}",
+        parse_mode="Markdown",
     )
 
 
@@ -754,18 +737,16 @@ async def new_bundle_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode="Markdown",
         )
         return
-
     title     = " ".join(context.args)
     bundle_id = uuid.uuid4().hex[:8]
     create_bundle(bundle_id, title, uid)
     bundle_sessions[uid] = {"bundle_id": bundle_id, "title": title, "videos": []}
-
     await update.message.reply_text(
-        f"📦 باندل *{title}* ساخته شد\\!\n\n"
+        f"📦 باندل *{title}* ساخته شد!\n\n"
         f"🆔 شناسه: `{bundle_id}`\n\n"
-        "حالا ویدیوها و عکس‌ها را یکی‌یکی ارسال کن\\.\n"
-        "وقتی تمام شد /donebundle را بفرست\\.",
-        parse_mode="MarkdownV2",
+        "حالا ویدیوها و عکس‌ها را یکی‌یکی ارسال کن.\n"
+        "وقتی تمام شد /donebundle را بفرست.",
+        parse_mode="Markdown",
     )
 
 
@@ -775,22 +756,18 @@ async def done_bundle_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if uid not in bundle_sessions:
         await update.message.reply_text("❌ هیچ باندل فعالی وجود ندارد. ابتدا /newbundle را اجرا کن.")
         return
-
     session = bundle_sessions.pop(uid)
     count   = len(session["videos"])
-
     if count == 0:
         delete_bundle(session["bundle_id"])
         await update.message.reply_text("❌ باندل بدون محتوا حذف شد.")
         return
-
     bot_username = (await context.bot.get_me()).username
     link = f"https://t.me/{bot_username}?start=b_{session['bundle_id']}"
     await update.message.reply_text(
-        f"✅ باندل *{session['title']}* با {count} محتوا ذخیره شد\\!\n\n"
-        f"🆔 شناسه: `{session['bundle_id']}`\n"
-        f"🔗 لینک: {escape_md(link)}",
-        parse_mode="MarkdownV2",
+        f"✅ باندل *{session['title']}* با {count} محتوا ذخیره شد!\n\n"
+        f"🆔 شناسه: `{session['bundle_id']}`\n🔗 لینک: {link}",
+        parse_mode="Markdown",
     )
 
 
@@ -830,7 +807,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
         return
-
     st = get_video_stats(context.args[0])
     if not st:
         await update.message.reply_text("❌ محتوا پیدا نشد.")
@@ -849,8 +825,12 @@ async def delete_video_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if not context.args:
         await update.message.reply_text("استفاده: /delvideo <id>")
         return
-    delete_video(context.args[0])
-    await update.message.reply_text(f"✅ محتوا `{context.args[0]}` حذف شد.", parse_mode="Markdown")
+    vid_id = context.args[0]
+    if not get_video(vid_id):
+        await update.message.reply_text("❌ محتوا پیدا نشد.")
+        return
+    delete_video(vid_id)
+    await update.message.reply_text(f"✅ محتوا `{vid_id}` حذف شد.", parse_mode="Markdown")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -861,8 +841,7 @@ async def delete_video_command(update: Update, context: ContextTypes.DEFAULT_TYP
 async def add_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 3:
         await update.message.reply_text(
-            "استفاده:\n"
-            "عمومی: `/addchannel @username عنوان لینک`\n"
+            "استفاده:\nعمومی: `/addchannel @username عنوان لینک`\n"
             "خصوصی: `/addchannel -1001234567890 عنوان لینک_دعوت`",
             parse_mode="Markdown",
         )
@@ -896,7 +875,7 @@ async def list_channels_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Admins (Owner only)
+#  Admins
 # ═══════════════════════════════════════════════════════════════
 
 async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1018,3 +997,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+ENDOFFILE
